@@ -1,6 +1,7 @@
-# 基于Go模拟Vue3模板编译器
+# 基于 Go 模拟 Vue3 模板编译器
 
 ## 进度：
+
 parse (99%)
-transform (0%)
-generate (0%)
+transform (80%)
+generate (80%)

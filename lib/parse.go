@@ -20,10 +20,10 @@ type Prop struct {
 }
 
 type ASTNode struct {
-	tagType  TYPE   // 类型: ROOT标签 元素 纯文本 插值表达式 IF标签 FOR标签
-	tagName  string // 标签名
-	props    []Prop
-	children []interface{} // []ASTNode | []string
+	tagType  TYPE          // 类型: ROOT标签 元素 纯文本 插值表达式 IF标签 FOR标签
+	tagName  string        // 标签名
+	props    []*Prop       // props
+	children []interface{} // []*ASTNode | []*TextNode
 }
 
 type TextNode struct {
@@ -50,9 +50,10 @@ var (
 	START_TAG_PATTERN       = regexp.MustCompile(`^<([a-zA-Z]+)`)
 	START_TAG_CLOSE_PATTERN = regexp.MustCompile(`^\s*(\/?)>`)
 	END_TAG_PATTERN         = regexp.MustCompile(`^<\/([a-zA-Z]+)>`)
-	DYNAMIC_PROPS_PATTERN   = regexp.MustCompile(`^\s*((?:v-[\w-]+:|@|:|#)\[[^=]+?\][^\s"'<>\/=]*)(?:\s*(=)\s*(?:"([^"]*)"+|'([^']*)'+|([^\s"'=<>` + "`" + `]+)))?`)
-	STATIC_PROPS_PATTERN    = regexp.MustCompile(`^\s*([^\s"'<>\/=]+)(?:\s*(=)\s*(?:"([^"]*)"+|'([^']*)'+|([^\s"'=<>` + "`" + `]+)))?`)
-	INTERPOLATION_PATTERN   = regexp.MustCompile(`^{{([^}]+)}}`)
+	// DYNAMIC_PROPS_PATTERN   = regexp.MustCompile(`^\s*((?:v-[\w-]+:|@|:|#)\[[^=]+?\][^\s"'<>\/=]*)(?:\s*(=)\s*(?:"([^"]*)"+|'([^']*)'+|([^\s"'=<>` + "`" + `]+)))?`)
+	DYNAMIC_PROPS_PATTERN = regexp.MustCompile(`^\s*([^\s"'<>\/=]+)(?:\s*(=)\s*(?:"([^"]*)"+|'([^']*)'+|([^\s"'=<>` + "`" + `]+)))?`)
+	STATIC_PROPS_PATTERN  = regexp.MustCompile(`^\s*([^\s"':<>\/=]+)(?:\s*(=)\s*(?:"([^"]*)"+|'([^']*)'+|([^\s"'=<>` + "`" + `]+)))?`)
+	INTERPOLATION_PATTERN = regexp.MustCompile(`^{{\s*(.*?)\s*}}`)
 )
 
 /**
@@ -147,7 +148,7 @@ func Parse(template string) ASTNode {
 					// 自闭标签 />
 					// token = node.tagName
 					// 收集 ASTNode 的信息
-					pushChildrenToStackTail(node)
+					pushChildrenToStackTail(&node)
 				} else {
 					pushStack(node)
 				}
@@ -160,7 +161,7 @@ func Parse(template string) ASTNode {
 
 			if len(match) > 0 {
 				// token = match[0]
-				node.props = append(node.props, Prop{"static", match[0], true})
+				node.props = append(node.props, &Prop{"", match[0], true})
 				advanceBy(len(match[0]))
 			}
 
@@ -169,7 +170,7 @@ func Parse(template string) ASTNode {
 
 			if len(match) > 0 {
 				// token = match[0]
-				node.props = append(node.props, Prop{"dynamic", match[0], false})
+				node.props = append(node.props, &Prop{"", match[0], false})
 				advanceBy(len(match[0]))
 			}
 		}
@@ -198,7 +199,7 @@ func Parse(template string) ASTNode {
 			// token = text
 			advanceBy(len(text) + 1)
 
-			pushChildrenToStackTail(TextNode{PLAIN_TEXT, text})
+			pushChildrenToStackTail(&TextNode{PLAIN_TEXT, text})
 		}
 	}
 
@@ -211,7 +212,7 @@ func Parse(template string) ASTNode {
 			// token = match[1]
 			advanceBy(len(match[0]))
 
-			pushChildrenToStackTail(TextNode{INTERPOLATION, match[1]})
+			pushChildrenToStackTail(&TextNode{INTERPOLATION, match[1]})
 		}
 	}
 
@@ -240,7 +241,7 @@ func Parse(template string) ASTNode {
 				if err != nil {
 					break
 				} else {
-					pushChildrenToStackTail(last)
+					pushChildrenToStackTail(&last)
 				}
 			}
 
@@ -256,11 +257,124 @@ func Parse(template string) ASTNode {
 	return stack[len(stack)-1]
 }
 
+/**
+ * transform
+ */
+func traverseChildren(node *ASTNode) {
+	for i := 0; i < len(node.children); i++ {
+		child := node.children[i]
+		Transform(child)
+	}
+}
+
+func Transform(node interface{}) error {
+	switch draft := node.(type) {
+	case *ASTNode:
+		{
+			// 1. 处理 props
+			for i, prop := range draft.props {
+				parts := strings.SplitN(prop.value, "=", 2)
+				if len(parts) != 2 {
+					return errors.New("文本解析出错: " + prop.value)
+				}
+
+				field := parts[0]
+				value := parts[1]
+
+				// 在Go中字符串是不可变数据类型, 一旦创建不可修改, 修改时实际上是创建了新的字符串副本, 所以修改时无需用指针
+				if draft.props[i].static == true {
+					draft.props[i].field = field
+					draft.props[i].value = value
+				} else {
+					// 动态字符串
+					draft.props[i].field = field[1:(len(field))]
+					// 掐头去尾
+					draft.props[i].value = fmt.Sprintf("vm.%v", value[1:len(value)-1])
+				}
+			}
+			// 2. 处理子节点
+			traverseChildren(draft)
+		}
+	case *TextNode:
+		{
+			if draft.tagType == INTERPOLATION {
+				// 如果是"插值表达式", 则从 vm 读取
+				draft.content = fmt.Sprintf("vm.%v", draft.content)
+			} else {
+				// 如果是"纯文本", 则添加引号
+				draft.content = fmt.Sprintf("'%v'", draft.content)
+			}
+		}
+	}
+	// TODO 实际上这里还可以做很多事情, 比如特殊处理v-if、v-for、v-modal、v-once等等
+	// ...
+
+	return nil
+}
+
+/**
+ * generate
+ */
+func nodeToCode(node interface{}) (string, error) {
+	switch node := node.(type) {
+	case *ASTNode:
+		{
+			children := ""
+
+			for _, child := range node.children {
+				cur, error := nodeToCode(child)
+				if error != nil {
+					return "", error
+				}
+				children += cur + ","
+			}
+
+			props := ""
+			for _, prop := range node.props {
+				props += fmt.Sprintf(" %s:%v,", prop.field, prop.value)
+			}
+
+			var result string
+			if props != "" {
+				result = fmt.Sprintf("%s, {%s}", result, props)
+			}
+
+			if children != "" {
+				result = fmt.Sprintf("%s, [%s]", result, children)
+			}
+
+			return fmt.Sprintf("h('%s'%s)", node.tagName, result), nil
+		}
+	case *TextNode:
+		{
+			return node.content, nil
+		}
+	}
+
+	return "", errors.New("不识别的标签")
+}
+
+func Generate(node *ASTNode) (string, error) {
+	vNode, err := nodeToCode(node)
+
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf(`
+		import { h } from 'vue'
+		export function render () {
+			const vm = this
+			return %v
+		}
+	`, vNode), nil
+}
+
 func main() {
 	template := `
 		<template>
 			<div id="count">
-				<span>{{ add }}</span>
+				<span :className="position">{{ add }}</span>
 				<span>
 					number:{{ count }}
 				</span>
@@ -269,7 +383,17 @@ func main() {
 		</template>
 	`
 
-	tokens := Parse(template)
+	ast := Parse(template)
 
-	fmt.Println("tokens", tokens)
+	Transform(&ast)
+
+	fmt.Println("ast", ast)
+
+	code, error := Generate(&ast)
+
+	if error != nil {
+		fmt.Println("error", error)
+	}
+
+	fmt.Println("code", code)
 }
