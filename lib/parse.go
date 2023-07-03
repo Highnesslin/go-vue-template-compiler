@@ -101,9 +101,9 @@ func Parse(template string) ASTNode {
 	}
 
 	/**
-	 * 向栈尾元素追加子节点
+	 * 向栈首元素追加子节点
 	 */
-	pushChildrenToStackTail := func(arg interface{}) {
+	pushChildrenToStackHead := func(arg interface{}) {
 		stackLen := len(stack)
 		if stackLen > 0 {
 			stack[stackLen-1].children = append(stack[stackLen-1].children, arg)
@@ -144,7 +144,7 @@ func Parse(template string) ASTNode {
 					// 自闭标签 />
 					// token = node.tagName
 					// 收集 ASTNode 的信息
-					pushChildrenToStackTail(&node)
+					pushChildrenToStackHead(&node)
 				} else {
 					pushStack(node)
 				}
@@ -195,7 +195,7 @@ func Parse(template string) ASTNode {
 			// token = text
 			advanceBy(len(text) + 1)
 
-			pushChildrenToStackTail(&TextNode{PLAIN_TEXT, text})
+			pushChildrenToStackHead(&TextNode{PLAIN_TEXT, text})
 		}
 	}
 
@@ -208,7 +208,7 @@ func Parse(template string) ASTNode {
 			// token = match[1]
 			advanceBy(len(match[0]))
 
-			pushChildrenToStackTail(&TextNode{INTERPOLATION, match[1]})
+			pushChildrenToStackHead(&TextNode{INTERPOLATION, match[1]})
 		}
 	}
 
@@ -237,7 +237,7 @@ func Parse(template string) ASTNode {
 				if err != nil {
 					break
 				} else {
-					pushChildrenToStackTail(&last)
+					pushChildrenToStackHead(&last)
 				}
 			}
 
